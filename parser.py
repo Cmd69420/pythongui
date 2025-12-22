@@ -2,10 +2,8 @@ import re
 import pandas as pd
 from lxml import etree
 
-ALLOWED_GROUPS = {
-    "sundry debtors",
-    "sundry creditors"
-}
+# REMOVED THE HARDCODED FILTER - Now accepts all ledgers
+# Filtering will be done in the app based on user selection
 
 # ----------------------------
 # Helpers
@@ -84,10 +82,10 @@ def parse_ledgers(xml_text: str) -> pd.DataFrame:
     rows = []
 
     for ledger in root.findall(".//LEDGER"):
-        parent = _text(ledger, "PARENT").lower()
+        parent = _text(ledger, "PARENT").strip()
 
-        if parent not in ALLOWED_GROUPS:
-            continue
+        # NO FILTERING HERE - Accept all ledgers
+        # The app will filter based on user selection
 
         name = ledger.get("NAME", "").strip()
 
@@ -118,7 +116,7 @@ def parse_ledgers(xml_text: str) -> pd.DataFrame:
         rows.append({
             "guid": _text(ledger, "GUID"),
             "name": name,
-            "parent": parent.title(),
+            "parent": parent.title() if parent else "",
             "address": address,
             "phone": phone,
             "email": email,
