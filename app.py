@@ -1,9 +1,9 @@
-from tkinter import Tk, Label, Button, StringVar, ttk, messagebox, Entry, Checkbutton, BooleanVar, Frame, Listbox, Scrollbar, MULTIPLE, END
+from tkinter import Tk, Label, Button, StringVar, ttk, messagebox, Entry, Checkbutton, BooleanVar, Frame, Listbox, Scrollbar, MULTIPLE, END, VERTICAL, BOTH, LEFT, RIGHT, TOP, BOTTOM, X, Y, Canvas, Radiobutton, IntVar
 from tally_client import TallyClient
 from server_client import server_health_check
 from config import TALLY_URL, SERVER_HEALTH_URL
 from parser import parse_ledgers
-from geocoder import geocode_dataframe
+from geocoder import geocode_dataframe  # Now uses enhanced geocoder with Google Places
 import threading
 
 OUTPUT_FILE = "tally_export.csv"
@@ -44,7 +44,10 @@ class MiddlewareApp:
     def __init__(self, root):
         self.root = root
         self.root.title("Tally Middleware - Advanced Export")
-        self.root.geometry("700x700")
+        self.root.geometry("750x700")  # Smaller window, but scrollable
+        
+        # Make window resizable
+        self.root.minsize(700, 600)
 
         self.tally = TallyClient(TALLY_URL)
 
@@ -54,45 +57,92 @@ class MiddlewareApp:
         self.company_var = StringVar()
         self.master_type_var = StringVar()
         self.do_geocode = BooleanVar(value=True)
+        self.geocode_method = IntVar(value=1)  # 1=Enhanced, 2=Basic, 3=None
         self.extraction_status = StringVar(value="")
         self.is_company_secured = False  # Track if current company needs credentials
 
-        # Build UI
-        self.build_ui()
+        # Build UI with scrollbar
+        self.build_scrollable_ui()
         
         # Initial status check
         self.refresh_status()
 
-    def build_ui(self):
+    def build_scrollable_ui(self):
+        # Create main container with scrollbar
+        main_container = Frame(self.root)
+        main_container.pack(fill=BOTH, expand=True)
+        
+        # Create canvas
+        self.canvas = Canvas(main_container, highlightthickness=0)
+        self.canvas.pack(side=LEFT, fill=BOTH, expand=True)
+        
+        # Add scrollbar
+        scrollbar = Scrollbar(main_container, orient=VERTICAL, command=self.canvas.yview)
+        scrollbar.pack(side=RIGHT, fill=Y)
+        
+        # Configure canvas
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Create frame inside canvas
+        self.scrollable_frame = Frame(self.canvas)
+        self.canvas_frame = self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        
+        # Configure scroll region when frame size changes
+        self.scrollable_frame.bind("<Configure>", self.on_frame_configure)
+        
+        # Bind mousewheel to scroll
+        self.canvas.bind_all("<MouseWheel>", self.on_mousewheel)
+        
+        # Bind canvas resize to update frame width
+        self.canvas.bind("<Configure>", self.on_canvas_configure)
+        
+        # Build UI inside scrollable frame
+        self.build_ui(self.scrollable_frame)
+    
+    def on_frame_configure(self, event=None):
+        """Update scroll region when frame size changes"""
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+    
+    def on_canvas_configure(self, event):
+        """Update frame width when canvas is resized"""
+        canvas_width = event.width
+        self.canvas.itemconfig(self.canvas_frame, width=canvas_width)
+    
+    def on_mousewheel(self, event):
+        """Enable mousewheel scrolling"""
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def build_ui(self, parent):
         # Header
-        Label(self.root, text="Tally Middleware - Advanced Export", font=("Arial", 14, "bold")).pack(pady=10)
+        Label(parent, text="Tally Middleware - Advanced Export", 
+              font=("Arial", 14, "bold")).pack(pady=10)
 
         # Status Section
-        status_frame = Frame(self.root)
+        status_frame = Frame(parent)
         status_frame.pack(pady=5)
         
         Label(status_frame, textvariable=self.tally_status).pack()
-        Label(status_frame, textvariable=self.server_status).pack(pady=5)
-        Button(status_frame, text="Refresh Status", command=self.refresh_status).pack(pady=5)
+        Label(status_frame, textvariable=self.server_status).pack(pady=3)
+        Button(status_frame, text="Refresh Status", 
+               command=self.refresh_status, padx=10, pady=3).pack(pady=5)
 
-        ttk.Separator(self.root, orient='horizontal').pack(fill='x', pady=10)
+        ttk.Separator(parent, orient='horizontal').pack(fill=X, pady=10, padx=20)
 
         # Company Selection
-        Label(self.root, text="Select Company", font=("Arial", 11, "bold")).pack(pady=5)
-        self.company_dropdown = ttk.Combobox(self.root, textvariable=self.company_var, width=60)
-        self.company_dropdown.pack()
+        Label(parent, text="Select Company", 
+              font=("Arial", 11, "bold")).pack(pady=5)
+        self.company_dropdown = ttk.Combobox(parent, textvariable=self.company_var, width=70)
+        self.company_dropdown.pack(pady=5)
         self.company_dropdown.bind("<<ComboboxSelected>>", self.on_company_selected)
 
-        ttk.Separator(self.root, orient='horizontal').pack(fill='x', pady=10)
+        ttk.Separator(parent, orient='horizontal').pack(fill=X, pady=10, padx=20)
 
         # Master Type Selection
-        master_selection_frame = Frame(self.root)
-        master_selection_frame.pack(pady=5, fill='both', expand=True)
-
-        Label(master_selection_frame, text="Select Master Type", font=("Arial", 11, "bold")).pack(pady=5)
+        Label(parent, text="Select Master Type", 
+              font=("Arial", 11, "bold")).pack(pady=5)
         
-        master_type_frame = Frame(master_selection_frame)
-        master_type_frame.pack()
+        master_type_frame = Frame(parent)
+        master_type_frame.pack(pady=5)
         
         self.master_type_dropdown = ttk.Combobox(
             master_type_frame, 
@@ -101,85 +151,162 @@ class MiddlewareApp:
             width=30,
             state="readonly"
         )
-        self.master_type_dropdown.pack(side='left', padx=5)
+        self.master_type_dropdown.pack(side=LEFT, padx=5)
         self.master_type_dropdown.bind("<<ComboboxSelected>>", self.on_master_type_change)
         
         # Load Groups button (for Ledger type)
         self.load_groups_btn = Button(
             master_type_frame,
-            text="🔄 Load Groups from Tally",
+            text="🔄 Load Groups",
             command=self.load_groups_from_tally,
-            state='disabled'
+            state='disabled',
+            padx=10,
+            pady=5
         )
-        self.load_groups_btn.pack(side='left', padx=5)
+        self.load_groups_btn.pack(side=LEFT, padx=5)
 
         # Sub-category selection (multiselect)
-        Label(master_selection_frame, text="Select Categories to Export", font=("Arial", 10, "bold")).pack(pady=(10,5))
+        Label(parent, text="Select Categories to Export", 
+              font=("Arial", 10, "bold")).pack(pady=10)
         
-        listbox_frame = Frame(master_selection_frame)
-        listbox_frame.pack(pady=5, fill='both', expand=True)
+        listbox_frame = Frame(parent)
+        listbox_frame.pack(pady=5, padx=20, fill=X)
 
-        scrollbar = Scrollbar(listbox_frame)
-        scrollbar.pack(side='right', fill='y')
+        list_scrollbar = Scrollbar(listbox_frame)
+        list_scrollbar.pack(side=RIGHT, fill=Y)
 
         self.category_listbox = Listbox(
             listbox_frame, 
             selectmode=MULTIPLE, 
             height=8,
-            yscrollcommand=scrollbar.set
+            yscrollcommand=list_scrollbar.set,
+            font=("Arial", 9)
         )
-        self.category_listbox.pack(side='left', fill='both', expand=True, padx=10)
-        scrollbar.config(command=self.category_listbox.yview)
+        self.category_listbox.pack(side=LEFT, fill=BOTH, expand=True)
+        list_scrollbar.config(command=self.category_listbox.yview)
 
         # Select All / Deselect All buttons
-        btn_frame = Frame(master_selection_frame)
-        btn_frame.pack(pady=5)
-        Button(btn_frame, text="Select All", command=self.select_all_categories).pack(side='left', padx=5)
-        Button(btn_frame, text="Deselect All", command=self.deselect_all_categories).pack(side='left', padx=5)
+        btn_frame = Frame(parent)
+        btn_frame.pack(pady=8)
+        Button(btn_frame, text="Select All", 
+               command=self.select_all_categories, padx=15, pady=3).pack(side=LEFT, padx=5)
+        Button(btn_frame, text="Deselect All", 
+               command=self.deselect_all_categories, padx=15, pady=3).pack(side=LEFT, padx=5)
 
-        ttk.Separator(self.root, orient='horizontal').pack(fill='x', pady=10)
+        ttk.Separator(parent, orient='horizontal').pack(fill=X, pady=10, padx=20)
 
         # Credentials Section
-        Label(self.root, text="Tally Credentials", font=("Arial", 11, "bold")).pack(pady=5)
+        Label(parent, text="Tally Credentials", 
+              font=("Arial", 11, "bold")).pack(pady=5)
         
-        cred_frame = Frame(self.root)
-        cred_frame.pack()
+        cred_frame = Frame(parent)
+        cred_frame.pack(pady=5)
         
         Label(cred_frame, text="Username:").grid(row=0, column=0, sticky='e', padx=5, pady=5)
-        self.user_entry = Entry(cred_frame, width=30)
+        self.user_entry = Entry(cred_frame, width=35)
         self.user_entry.grid(row=0, column=1, padx=5, pady=5)
 
         Label(cred_frame, text="Password:").grid(row=1, column=0, sticky='e', padx=5, pady=5)
-        self.pass_entry = Entry(cred_frame, show="*", width=30)
+        self.pass_entry = Entry(cred_frame, show="*", width=35)
         self.pass_entry.grid(row=1, column=1, padx=5, pady=5)
 
-        # Geocoding Option (only for Ledgers)
-        self.geocode_check = Checkbutton(
-            self.root,
-            text="Enable Geocoding (Lat / Lng) - For Ledgers only",
-            variable=self.do_geocode,
+        ttk.Separator(parent, orient='horizontal').pack(fill=X, pady=10, padx=20)
+
+        # Geocoding Options (only for Ledgers) - WITH METHODS
+        geocode_frame = Frame(parent, relief="solid", borderwidth=2, bg="#f0f8ff")
+        geocode_frame.pack(pady=10, padx=30, fill=X)
+        
+        Label(
+            geocode_frame,
+            text="🌍 Geocoding Options (For Comparison)",
+            font=("Arial", 11, "bold"),
+            bg="#f0f8ff"
+        ).pack(pady=8)
+        
+        # Radio buttons for methods
+        radio_frame = Frame(geocode_frame, bg="#f0f8ff")
+        radio_frame.pack(pady=5)
+        
+        self.geocode_radio1 = Radiobutton(
+            radio_frame,
+            text="🚀 Enhanced (Google Places + Address Geocoding)",
+            variable=self.geocode_method,
+            value=1,
+            font=("Arial", 9),
+            bg="#f0f8ff",
             state='disabled'
         )
-        self.geocode_check.pack(pady=10)
+        self.geocode_radio1.pack(anchor='w', padx=20, pady=2)
+        
+        Label(
+            radio_frame,
+            text="   → Searches business on Google first, then falls back to address",
+            font=("Arial", 8),
+            fg="#555",
+            bg="#f0f8ff"
+        ).pack(anchor='w', padx=40)
+        
+        self.geocode_radio2 = Radiobutton(
+            radio_frame,
+            text="📍 Basic (Address Geocoding Only)",
+            variable=self.geocode_method,
+            value=2,
+            font=("Arial", 9),
+            bg="#f0f8ff",
+            state='disabled'
+        )
+        self.geocode_radio2.pack(anchor='w', padx=20, pady=2)
+        
+        Label(
+            radio_frame,
+            text="   → Only geocodes the address from Tally (original method)",
+            font=("Arial", 8),
+            fg="#555",
+            bg="#f0f8ff"
+        ).pack(anchor='w', padx=40)
+        
+        self.geocode_radio3 = Radiobutton(
+            radio_frame,
+            text="❌ No Geocoding",
+            variable=self.geocode_method,
+            value=3,
+            font=("Arial", 9),
+            bg="#f0f8ff",
+            state='disabled'
+        )
+        self.geocode_radio3.pack(anchor='w', padx=20, pady=2)
+        
+        Label(
+            radio_frame,
+            text="   → Export without coordinates (faster)",
+            font=("Arial", 8),
+            fg="#555",
+            bg="#f0f8ff"
+        ).pack(anchor='w', padx=40, pady=(0, 8))
 
-        ttk.Separator(self.root, orient='horizontal').pack(fill='x', pady=10)
+        ttk.Separator(parent, orient='horizontal').pack(fill=X, pady=10, padx=20)
 
         # Extraction Status
-        self.status_label = Label(self.root, textvariable=self.extraction_status, fg="blue", font=("Arial", 10))
-        self.status_label.pack(pady=5)
+        self.status_label = Label(parent, textvariable=self.extraction_status, 
+                                 fg="blue", font=("Arial", 10), wraplength=600)
+        self.status_label.pack(pady=10)
 
-        # Extract Button
+        # Extract Button (larger and more prominent)
         self.extract_btn = Button(
-            self.root, 
-            text="Start Extraction", 
+            parent, 
+            text="🚀 Start Extraction", 
             command=self.start_extraction,
             bg="#4CAF50",
             fg="white",
-            font=("Arial", 11, "bold"),
-            padx=20,
-            pady=10
+            font=("Arial", 12, "bold"),
+            padx=40,
+            pady=15,
+            cursor="hand2"
         )
-        self.extract_btn.pack(pady=10)
+        self.extract_btn.pack(pady=20)
+        
+        # Add some bottom padding
+        Label(parent, text="", height=2).pack()
 
     def refresh_status(self):
         if self.tally.test_connection():
@@ -244,14 +371,20 @@ class MiddlewareApp:
             for cat in categories:
                 self.category_listbox.insert(END, cat)
         
-        # Enable "Load Groups" button for Ledger type
+        # Enable "Load Groups" button and geocoding for Ledger type
         if master_type == "Ledger":
             self.load_groups_btn.config(state='normal')
-            self.geocode_check.config(state='normal')
+            # Enable all radio buttons
+            self.geocode_radio1.config(state='normal')
+            self.geocode_radio2.config(state='normal')
+            self.geocode_radio3.config(state='normal')
         else:
             self.load_groups_btn.config(state='disabled')
-            self.geocode_check.config(state='disabled')
-            self.do_geocode.set(False)
+            # Disable all radio buttons
+            self.geocode_radio1.config(state='disabled')
+            self.geocode_radio2.config(state='disabled')
+            self.geocode_radio3.config(state='disabled')
+            self.geocode_method.set(3)  # Set to "No Geocoding"
 
     def load_groups_from_tally(self):
         """Fetch actual groups from Tally when button is clicked"""
@@ -300,7 +433,7 @@ class MiddlewareApp:
                 messagebox.showerror("Error", f"Failed to load groups:\n{error_msg}\n\nUsing default groups instead.")
             self.extraction_status.set("❌ Using default groups")
         finally:
-            self.load_groups_btn.config(state='normal', text="🔄 Load Groups from Tally")
+            self.load_groups_btn.config(state='normal', text="🔄 Load Groups")
 
     def select_all_categories(self):
         self.category_listbox.select_set(0, END)
@@ -342,7 +475,7 @@ class MiddlewareApp:
             return
 
         # Disable button during extraction
-        self.extract_btn.config(state='disabled')
+        self.extract_btn.config(state='disabled', text="⏳ Extracting...")
 
         # Run extraction in separate thread
         thread = threading.Thread(
@@ -378,11 +511,68 @@ class MiddlewareApp:
                     df = df[df['parent'].str.lower().isin(categories_lower)]
                     print(f"DEBUG: Filtered to {len(df)} ledgers from categories: {categories}")
                 
-                # Geocode if enabled
-                if self.do_geocode.get():
-                    self._update_status("Geocoding addresses...")
-                    df = geocode_dataframe(df)
-                    print(f"DEBUG: Geocoding complete")
+                # Enhanced Geocoding with Google Places
+                geocode_option = self.geocode_method.get()
+                
+                if geocode_option == 1:
+                    # Enhanced method
+                    self._update_status("🌍 Enhanced geocoding (Google Places + Address)...")
+                    print(f"DEBUG: Starting ENHANCED geocoding for {len(df)} ledgers...")
+                    
+                    df = geocode_dataframe(
+                        df, 
+                        address_col="address", 
+                        name_col="name",
+                        max_workers=4,
+                        use_enhanced=True
+                    )
+                    
+                    # Count success by source
+                    if 'location_source' in df.columns:
+                        places_count = len(df[df['location_source'] == 'google_places'])
+                        geocoded_count = len(df[df['location_source'] == 'geocoded'])
+                        not_found = len(df[df['location_source'] == 'not_found'])
+                        
+                        print(f"DEBUG: Enhanced Geocoding complete:")
+                        print(f"  - Google Places: {places_count}")
+                        print(f"  - Address Geocoding: {geocoded_count}")
+                        print(f"  - Not Found: {not_found}")
+                        
+                        self._update_status(
+                            f"✅ Enhanced: {places_count} via Places, "
+                            f"{geocoded_count} via address, {not_found} not found"
+                        )
+                
+                elif geocode_option == 2:
+                    # Basic method
+                    self._update_status("📍 Basic geocoding (Address only)...")
+                    print(f"DEBUG: Starting BASIC geocoding for {len(df)} ledgers...")
+                    
+                    df = geocode_dataframe(
+                        df, 
+                        address_col="address",
+                        max_workers=4,
+                        use_enhanced=False
+                    )
+                    
+                    # Count success
+                    if 'location_source' in df.columns:
+                        geocoded_count = len(df[df['location_source'] == 'geocoded'])
+                        not_found = len(df[df['location_source'] == 'not_found'])
+                        
+                        print(f"DEBUG: Basic Geocoding complete:")
+                        print(f"  - Address Geocoding: {geocoded_count}")
+                        print(f"  - Not Found: {not_found}")
+                        
+                        self._update_status(
+                            f"✅ Basic: {geocoded_count} geocoded, {not_found} not found"
+                        )
+                
+                else:
+                    # No geocoding
+                    print(f"DEBUG: Skipping geocoding (user selected 'No Geocoding')")
+                    self._update_status("⏭️ Skipped geocoding")
+                    
             else:
                 # For other master types, use generic fetch
                 print(f"DEBUG: Fetching {master_type} masters...")
@@ -400,12 +590,30 @@ class MiddlewareApp:
 
             self._update_status(f"✅ Saved successfully to {filename}")
             
-            self.root.after(0, lambda: messagebox.showinfo(
-                "Success", 
-                f"Exported {len(df)} {master_type} records\n"
-                f"Categories: {', '.join(categories)}\n"
-                f"Saved to {filename}"
-            ))
+            # Build success message
+            success_msg = f"Exported {len(df)} {master_type} records\n"
+            success_msg += f"Categories: {', '.join(categories)}\n"
+            
+            # Add geocoding stats if applicable
+            if master_type == "Ledger" and 'location_source' in df.columns:
+                geocode_option = self.geocode_method.get()
+                
+                if geocode_option == 1:
+                    # Enhanced stats
+                    places_count = len(df[df['location_source'] == 'google_places'])
+                    geocoded_count = len(df[df['location_source'] == 'geocoded'])
+                    success_msg += f"\n🚀 Enhanced Geocoding Results:\n"
+                    success_msg += f"  • Google Places: {places_count}\n"
+                    success_msg += f"  • Address Geocoding: {geocoded_count}\n"
+                elif geocode_option == 2:
+                    # Basic stats
+                    geocoded_count = len(df[df['location_source'] == 'geocoded'])
+                    success_msg += f"\n📍 Basic Geocoding Results:\n"
+                    success_msg += f"  • Address Geocoding: {geocoded_count}\n"
+            
+            success_msg += f"\nSaved to {filename}"
+            
+            self.root.after(0, lambda: messagebox.showinfo("Success", success_msg))
 
         except Exception as e:
             print(f"DEBUG ERROR: {type(e).__name__}: {str(e)}")
@@ -417,7 +625,7 @@ class MiddlewareApp:
             self.root.after(0, lambda: messagebox.showerror("Error", error_msg))
         
         finally:
-            self.root.after(0, lambda: self.extract_btn.config(state='normal'))
+            self.root.after(0, lambda: self.extract_btn.config(state='normal', text="🚀 Start Extraction"))
 
     def _parse_generic_master(self, xml, master_type):
         """Placeholder for parsing other master types"""
