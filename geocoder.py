@@ -11,6 +11,20 @@ PLACES_SEARCH_URL = "https://maps.googleapis.com/maps/api/place/findplacefromtex
 PLACE_DETAILS_URL = "https://maps.googleapis.com/maps/api/place/details/json"
 
 
+def extract_pincode_from_components(address_components: list) -> str:
+    """Extract pincode from Google's address_components"""
+    for component in address_components:
+        if 'postal_code' in component.get('types', []):
+            return component.get('long_name', '')
+    return None
+
+
+def extract_pincode_from_address(address: str) -> str:
+    """Extract 6-digit pincode from address string (fallback)"""
+    match = re.search(r'\b(\d{6})\b', address)
+    return match.group(1) if match else None
+
+
 def extract_address_components(address: str) -> dict:
     """Extract city, state, pincode from address string"""
     components = {
@@ -40,9 +54,12 @@ def extract_address_components(address: str) -> dict:
 
 
 def geocode_address(address: str):
-    """Standard geocoding for addresses - returns (formatted_address, lat, lng)"""
+    """
+    Standard geocoding for addresses
+    Returns: (formatted_address, lat, lng, pincode)
+    """
     if not address or address.lower() == "nan" or not address.strip():
-        return None, None, None
+        return None, None, None, None
     
     try:
         params = {
@@ -54,16 +71,25 @@ def geocode_address(address: str):
         data = r.json()
 
         if data["status"] == "OK" and len(data["results"]) > 0:
-            loc = data["results"][0]["geometry"]["location"]
-            formatted_addr = data["results"][0].get("formatted_address", address)
-            return formatted_addr, loc["lat"], loc["lng"]
+            result = data["results"][0]
+            loc = result["geometry"]["location"]
+            formatted_addr = result.get("formatted_address", address)
+            
+            # ✅ EXTRACT PINCODE from address_components
+            pincode = extract_pincode_from_components(result.get("address_components", []))
+            
+            # Fallback: Extract from formatted address
+            if not pincode:
+                pincode = extract_pincode_from_address(formatted_addr)
+            
+            return formatted_addr, loc["lat"], loc["lng"], pincode
         else:
             print(f"  ⚠ Geocoding failed with status: {data.get('status', 'UNKNOWN')}")
-            return None, None, None
+            return None, None, None, None
     
     except Exception as e:
         print(f"  ✗ Error geocoding address: {e}")
-        return None, None, None
+        return None, None, None, None
 
 
 def search_business_nearby(business_name: str, lat: float, lng: float, radius: int = 500):
@@ -93,19 +119,22 @@ def search_business_nearby(business_name: str, lat: float, lng: float, radius: i
                 if place_id:
                     return get_place_details(place_id)
         
-        return None, None, None, None
+        return None, None, None, None, None
     
     except Exception as e:
         print(f"  ✗ Error searching nearby: {e}")
-        return None, None, None, None
+        return None, None, None, None, None
 
 
 def get_place_details(place_id: str):
-    """Get detailed place information"""
+    """
+    Get detailed place information
+    Returns: (name, address, lat, lng, pincode)
+    """
     try:
         params = {
             "place_id": place_id,
-            "fields": "name,formatted_address,geometry,rating,types",
+            "fields": "name,formatted_address,geometry,rating,types,address_components",
             "key": GOOGLE_API_KEY
         }
         
@@ -121,17 +150,25 @@ def get_place_details(place_id: str):
             lat = geometry.get("lat")
             lng = geometry.get("lng")
             
-            return name, address, lat, lng
+            # ✅ EXTRACT PINCODE
+            pincode = extract_pincode_from_components(result.get("address_components", []))
+            if not pincode:
+                pincode = extract_pincode_from_address(address)
+            
+            return name, address, lat, lng, pincode
         
-        return None, None, None, None
+        return None, None, None, None, None
     
     except Exception as e:
         print(f"  ✗ Error getting place details: {e}")
-        return None, None, None, None
+        return None, None, None, None, None
 
 
 def search_business_with_context(business_name: str, address: str):
-    """Context-aware text search using address components"""
+    """
+    Context-aware text search using address components
+    Returns: (address, lat, lng, pincode)
+    """
     try:
         components = extract_address_components(address)
         
@@ -165,26 +202,29 @@ def search_business_with_context(business_name: str, address: str):
                             "business", "finance", "bank", "restaurant", "shop"]
             
             if not any(t in place_types for t in business_types):
-                return None, None, None
+                return None, None, None, None
             
             # Validate pincode match
             result_address = candidate.get("formatted_address", "").lower()
             if components['pincode'] and components['pincode'] not in result_address:
-                return None, None, None
+                return None, None, None, None
             
             address = candidate.get("formatted_address", "")
             geometry = candidate.get("geometry", {}).get("location", {})
             lat = geometry.get("lat")
             lng = geometry.get("lng")
             
+            # ✅ EXTRACT PINCODE
+            pincode = extract_pincode_from_address(address)
+            
             if address and lat and lng:
-                return address, lat, lng
+                return address, lat, lng, pincode
         
-        return None, None, None
+        return None, None, None, None
     
     except Exception as e:
         print(f"  ✗ Error in context search: {e}")
-        return None, None, None
+        return None, None, None, None
 
 
 def is_likely_business_name(name: str) -> bool:
@@ -237,6 +277,7 @@ def is_likely_business_name(name: str) -> bool:
 def process_single_row_basic(row, address_col="address"):
     """
     BASIC MODE: Only geocode the address from Tally (original method)
+    Returns: dict with address, latitude, longitude, pincode, location_source
     """
     original_address = str(row.get(address_col, "")).strip()
     
@@ -244,6 +285,7 @@ def process_single_row_basic(row, address_col="address"):
         "address": original_address,
         "latitude": None,
         "longitude": None,
+        "pincode": None,  # ✅ ADDED
         "location_source": "not_found"
     }
     
@@ -252,14 +294,15 @@ def process_single_row_basic(row, address_col="address"):
         return result
     
     print(f"[BASIC] Geocoding: {original_address[:50]}...")
-    geocoded_addr, geo_lat, geo_lng = geocode_address(original_address)
+    geocoded_addr, geo_lat, geo_lng, geo_pincode = geocode_address(original_address)
     
     if geocoded_addr and geo_lat and geo_lng:
         result["address"] = geocoded_addr
         result["latitude"] = geo_lat
         result["longitude"] = geo_lng
+        result["pincode"] = geo_pincode  # ✅ ADDED
         result["location_source"] = "geocoded"
-        print(f"  ✓ Success: {geocoded_addr[:50]}...")
+        print(f"  ✓ Success: {geocoded_addr[:50]}... (Pincode: {geo_pincode or 'N/A'})")
         return result
     
     print(f"  ✗ Failed to geocode")
@@ -269,7 +312,7 @@ def process_single_row_basic(row, address_col="address"):
 def process_single_row_enhanced(row, address_col="address", name_col="name"):
     """
     ENHANCED MODE: Google Places search first, then fallback to address geocoding
-    (Multi-strategy approach)
+    Returns: dict with address, latitude, longitude, pincode, location_source, match_confidence
     """
     business_name = str(row.get(name_col, "")).strip()
     original_address = str(row.get(address_col, "")).strip()
@@ -278,6 +321,7 @@ def process_single_row_enhanced(row, address_col="address", name_col="name"):
         "address": original_address,
         "latitude": None,
         "longitude": None,
+        "pincode": None,  # ✅ ADDED
         "location_source": "not_found",
         "match_confidence": "none"
     }
@@ -292,11 +336,12 @@ def process_single_row_enhanced(row, address_col="address", name_col="name"):
         
         # Still geocode the address
         if original_address and original_address.lower() != "nan":
-            geocoded_addr, geo_lat, geo_lng = geocode_address(original_address)
+            geocoded_addr, geo_lat, geo_lng, geo_pincode = geocode_address(original_address)
             if geocoded_addr and geo_lat and geo_lng:
                 result["address"] = geocoded_addr
                 result["latitude"] = geo_lat
                 result["longitude"] = geo_lng
+                result["pincode"] = geo_pincode  # ✅ ADDED
                 result["location_source"] = "geocoded"
                 result["match_confidence"] = "address_only"
         
@@ -307,12 +352,12 @@ def process_single_row_enhanced(row, address_col="address", name_col="name"):
     # STRATEGY 1: Geocode address to get approximate location
     if original_address and original_address.lower() != "nan":
         print(f"  Step 1: Geocoding address...")
-        geocoded_addr, geo_lat, geo_lng = geocode_address(original_address)
+        geocoded_addr, geo_lat, geo_lng, geo_pincode = geocode_address(original_address)
         
         if geocoded_addr and geo_lat and geo_lng:
             # STRATEGY 2: Search for business nearby (500m)
             print(f"  Step 2: Searching nearby (500m)...")
-            place_name, place_addr, place_lat, place_lng = search_business_nearby(
+            place_name, place_addr, place_lat, place_lng, place_pincode = search_business_nearby(
                 business_name, geo_lat, geo_lng, radius=500
             )
             
@@ -320,14 +365,15 @@ def process_single_row_enhanced(row, address_col="address", name_col="name"):
                 result["address"] = place_addr
                 result["latitude"] = place_lat
                 result["longitude"] = place_lng
+                result["pincode"] = place_pincode  # ✅ ADDED
                 result["location_source"] = "google_places_nearby"
                 result["match_confidence"] = "high"
-                print(f"  ✓ Found nearby: {place_name}")
+                print(f"  ✓ Found nearby: {place_name} (Pincode: {place_pincode or 'N/A'})")
                 return result
             
             # STRATEGY 3: Wider search (2km)
             print(f"  Step 3: Expanding to 2km...")
-            place_name, place_addr, place_lat, place_lng = search_business_nearby(
+            place_name, place_addr, place_lat, place_lng, place_pincode = search_business_nearby(
                 business_name, geo_lat, geo_lng, radius=2000
             )
             
@@ -335,15 +381,16 @@ def process_single_row_enhanced(row, address_col="address", name_col="name"):
                 result["address"] = place_addr
                 result["latitude"] = place_lat
                 result["longitude"] = place_lng
+                result["pincode"] = place_pincode  # ✅ ADDED
                 result["location_source"] = "google_places_nearby"
                 result["match_confidence"] = "medium"
-                print(f"  ✓ Found nearby (2km): {place_name}")
+                print(f"  ✓ Found nearby (2km): {place_name} (Pincode: {place_pincode or 'N/A'})")
                 return result
     
     # STRATEGY 4: Context-aware text search
     if original_address and original_address.lower() != "nan":
         print(f"  Step 4: Context search...")
-        place_addr, place_lat, place_lng = search_business_with_context(
+        place_addr, place_lat, place_lng, place_pincode = search_business_with_context(
             business_name, original_address
         )
         
@@ -351,23 +398,25 @@ def process_single_row_enhanced(row, address_col="address", name_col="name"):
             result["address"] = place_addr
             result["latitude"] = place_lat
             result["longitude"] = place_lng
+            result["pincode"] = place_pincode  # ✅ ADDED
             result["location_source"] = "google_places_context"
             result["match_confidence"] = "medium"
-            print(f"  ✓ Found via context")
+            print(f"  ✓ Found via context (Pincode: {place_pincode or 'N/A'})")
             return result
     
     # STRATEGY 5: Fallback to address geocoding
     if original_address and original_address.lower() != "nan":
         print(f"  Step 5: Fallback to address...")
-        geocoded_addr, geo_lat, geo_lng = geocode_address(original_address)
+        geocoded_addr, geo_lat, geo_lng, geo_pincode = geocode_address(original_address)
         
         if geocoded_addr and geo_lat and geo_lng:
             result["address"] = geocoded_addr
             result["latitude"] = geo_lat
             result["longitude"] = geo_lng
+            result["pincode"] = geo_pincode  # ✅ ADDED
             result["location_source"] = "geocoded"
             result["match_confidence"] = "low"
-            print(f"  ✓ Using address only")
+            print(f"  ✓ Using address only (Pincode: {geo_pincode or 'N/A'})")
             return result
     
     print(f"  ✗ Could not find location")
@@ -380,11 +429,14 @@ def geocode_dataframe(df: pd.DataFrame, address_col="address", name_col="name",
     Main geocoding function with two modes:
     - use_enhanced=True: Enhanced mode (Google Places + Geocoding)
     - use_enhanced=False: Basic mode (Address Geocoding only)
+    
+    Returns DataFrame with: latitude, longitude, pincode, location_source
     """
     
     # Initialize columns
     df["latitude"] = None
     df["longitude"] = None
+    df["pincode"] = None  # ✅ ADDED
     df["location_source"] = "not_processed"
     
     if use_enhanced:
@@ -402,10 +454,8 @@ def geocode_dataframe(df: pd.DataFrame, address_col="address", name_col="name",
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for idx, row in df.iterrows():
             if use_enhanced:
-                # Enhanced mode
                 task = executor.submit(process_single_row_enhanced, row, address_col, name_col)
             else:
-                # Basic mode - FIXED!
                 task = executor.submit(process_single_row_basic, row, address_col)
             
             tasks[task] = idx
@@ -423,6 +473,7 @@ def geocode_dataframe(df: pd.DataFrame, address_col="address", name_col="name",
                     df.at[idx, address_col] = result["address"]
                 df.at[idx, "latitude"] = result["latitude"]
                 df.at[idx, "longitude"] = result["longitude"]
+                df.at[idx, "pincode"] = result["pincode"]  # ✅ ADDED
                 df.at[idx, "location_source"] = result["location_source"]
                 
                 if use_enhanced and "match_confidence" in result:
@@ -449,6 +500,12 @@ def geocode_dataframe(df: pd.DataFrame, address_col="address", name_col="name",
         percentage = (count / len(df)) * 100
         emoji = "✅" if source in ["geocoded", "google_places_nearby", "google_places_context"] else "❌"
         print(f"{emoji} {source}: {count} ({percentage:.1f}%)")
+    
+    # ✅ PINCODE STATISTICS
+    pincode_found = df["pincode"].notna().sum()
+    pincode_percentage = (pincode_found / len(df)) * 100
+    print(f"\n📍 Pincode Extraction:")
+    print(f"   Found: {pincode_found}/{len(df)} ({pincode_percentage:.1f}%)")
     
     if use_enhanced and "match_confidence" in df.columns:
         print(f"\n🎯 Match Confidence Breakdown:")

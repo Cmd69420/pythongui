@@ -39,6 +39,8 @@ class BidirectionalSync:
                 self._fetch_and_process_pending()
             except Exception as e:
                 print(f"❌ Polling error: {e}")
+                import traceback
+                traceback.print_exc()
             
             # Sleep in small chunks to allow quick shutdown
             for _ in range(interval):
@@ -52,11 +54,10 @@ class BidirectionalSync:
             print(f"   Company ID: {self.company_id}")
             print(f"   Token: {MIDDLEWARE_TOKEN[:10]}...")
             
-            # ✅ FIX: Use correct header name for middleware authentication
             response = requests.get(
                 f"{self.backend_url}/api/tally-sync/pending-for-middleware",
                 headers={
-                    'x-middleware-token': MIDDLEWARE_TOKEN  # ✅ Correct header name
+                    'x-middleware-token': MIDDLEWARE_TOKEN
                 },
                 params={
                     'companyId': self.company_id,
@@ -70,7 +71,6 @@ class BidirectionalSync:
             if response.status_code == 401:
                 print(f"   ❌ Authentication failed!")
                 print(f"   Response: {response.text}")
-                print(f"   Expected token: {MIDDLEWARE_TOKEN[:10]}...")
                 return
             
             if response.status_code != 200:
@@ -86,6 +86,15 @@ class BidirectionalSync:
                 return
             
             print(f"   ✅ Found {len(items)} pending items")
+            
+            # 🔍 DEBUG: Print all items
+            for i, item in enumerate(items, 1):
+                print(f"\n   📋 Item {i}:")
+                print(f"      Queue ID: {item.get('id')}")
+                print(f"      Client: {item.get('client_name')}")
+                print(f"      Operation: {item.get('operation')}")
+                print(f"      Tally GUID: {item.get('tally_guid')}")
+                print(f"      New Data: {json.dumps(item.get('new_data'), indent=6)}")
             
             # Process each item
             for item in items:
@@ -106,105 +115,182 @@ class BidirectionalSync:
         new_data = item['new_data']
         tally_guid = item['tally_guid']
         
-        print(f"\n📤 Processing: {client_name} ({operation})")
+        print(f"\n📤 Processing Queue Item #{queue_id}")
+        print(f"   Client: {client_name}")
+        print(f"   Operation: {operation}")
+        print(f"   Tally GUID: {tally_guid}")
         
         try:
             # Build Tally XML
             if operation == 'update_address' and 'address' in new_data:
-                success, error, tally_response = self._push_address_to_tally(
+                print(f"   New Address: {new_data['address']}")
+                
+                success, error, tally_response = self._push_address_to_tally_safe(
                     tally_guid,
-                    new_data['address']
+                    new_data['address'],
+                    client_name  # ← ADD THIS - pass the ledger name
                 )
+                
+                print(f"\n   📊 Tally Push Result:")
+                print(f"      Success: {success}")
+                print(f"      Error: {error}")
+                print(f"      Tally Response: {tally_response[:200] if tally_response else 'None'}...")
+                
             else:
                 success = False
                 error = f"Unsupported operation: {operation}"
                 tally_response = None
+                print(f"   ❌ {error}")
             
             # Report back to backend
+            print(f"\n   📡 Reporting to backend...")
             self._complete_item(queue_id, success, error, tally_response)
             
         except Exception as e:
             print(f"   ❌ Error: {e}")
+            import traceback
+            traceback.print_exc()
             self._complete_item(queue_id, False, str(e), None)
     
-    def _push_address_to_tally(self, tally_guid, address):
-        """Push address update to Tally"""
+    def _push_address_to_tally_safe(self, tally_guid, address, ledger_name):
+
         try:
-            # Build XML
-            login_block = ""
-            if self.username and self.password:
-                login_block = f"""
-                    <LOGIN>
-                        <USERNAME>{self._escape_xml(self.username)}</USERNAME>
-                        <PASSWORD>{self._escape_xml(self.password)}</PASSWORD>
-                    </LOGIN>
-                """
+            # Step 1: Fetch existing ledger
+            print(f"\n   📥 Fetching existing ledger from Tally...")
             
-            address_lines = address.split(",")
-            update_xml = "<ADDRESS.LIST>\n"
-            for line in address_lines:
-                if line.strip():
-                    update_xml += f"    <ADDRESS>{self._escape_xml(line.strip())}</ADDRESS>\n"
-            update_xml += "</ADDRESS.LIST>"
-            
-            xml_payload = f"""
-<ENVELOPE>
-    <HEADER>
-        <VERSION>1</VERSION>
-        <TALLYREQUEST>Import Data</TALLYREQUEST>
-        <TYPE>Data</TYPE>
-        <ID>Ledger Update</ID>
-    </HEADER>
-    <BODY>
-        <DESC>
-            <STATICVARIABLES>
-                <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-                <SVCURRENTCOMPANY>{self._escape_xml(self.tally_company_name)}</SVCURRENTCOMPANY>
-                {login_block}
-            </STATICVARIABLES>
-        </DESC>
-        <DATA>
-            <TALLYMESSAGE>
-                <LEDGER ACTION="Alter">
-                    <GUID>{self._escape_xml(tally_guid)}</GUID>
-                    {update_xml}
-                </LEDGER>
-            </TALLYMESSAGE>
-        </DATA>
-    </BODY>
-</ENVELOPE>
+            fetch_xml = f"""
+    <ENVELOPE>
+        <HEADER>
+            <VERSION>1</VERSION>
+            <TALLYREQUEST>Export Data</TALLYREQUEST>
+            <TYPE>Data</TYPE>
+            <ID>Ledger Export</ID>
+        </HEADER>
+        <BODY>
+            <DESC>
+                <STATICVARIABLES>
+                    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                    <SVCURRENTCOMPANY>{self._escape_xml(self.tally_company_name)}</SVCURRENTCOMPANY>
+                </STATICVARIABLES>
+                <TDL>
+                    <TDLMESSAGE>
+                        <COLLECTION NAME="LedgerCollection" ISMODIFY="No" ISFIXED="No" ISINITIALIZE="No" ISOPTION="No" ISINTERNAL="No">
+                            <TYPE>Ledger</TYPE>
+                            <FETCH>*, ADDRESS.LIST</FETCH>
+                            <FILTER>FilterByGUID</FILTER>
+                        </COLLECTION>
+                        <SYSTEM TYPE="Formulae" NAME="FilterByGUID">$$ISGUID:#GUID:{self._escape_xml(tally_guid)}</SYSTEM>
+                    </TDLMESSAGE>
+                </TDL>
+            </DESC>
+        </BODY>
+    </ENVELOPE>
             """.strip()
             
-            # Send to Tally
             response = requests.post(
                 self.tally_url,
-                data=xml_payload.encode("utf-8"),
+                data=fetch_xml.encode("utf-8"),
                 headers={"Content-Type": "application/xml"},
                 timeout=30
             )
             
+            if response.status_code != 200:
+                return False, f"Failed to fetch ledger: HTTP {response.status_code}", None
+            
+            print(f"   ✅ Fetched ledger (length: {len(response.text)} bytes)")
+            
+            # Step 2: Now update with new address
+            print(f"\n   🔧 Building update XML...")
+            
+            address_lines = [line.strip() for line in address.split(",") if line.strip()]
+            update_xml = '<ADDRESS.LIST TYPE="String">\n'
+            for line in address_lines:
+                update_xml += f'    <ADDRESS TYPE="String">{self._escape_xml(line)}</ADDRESS>\n'
+            update_xml += '</ADDRESS.LIST>'
+            
+            # Important: Use the exact ledger name
+            alter_xml = f"""
+    <ENVELOPE>
+        <HEADER>
+            <VERSION>1</VERSION>
+            <TALLYREQUEST>Import Data</TALLYREQUEST>
+            <TYPE>Data</TYPE>
+            <ID>Ledger Alter</ID>
+        </HEADER>
+        <BODY>
+            <DESC>
+                <STATICVARIABLES>
+                    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                    <SVCURRENTCOMPANY>{self._escape_xml(self.tally_company_name)}</SVCURRENTCOMPANY>
+                </STATICVARIABLES>
+            </DESC>
+            <DATA>
+                <TALLYMESSAGE xmlns:UDF="TallyUDF">
+                    <LEDGER NAME="{self._escape_xml(ledger_name)}" ACTION="Alter">
+                        <GUID>{self._escape_xml(tally_guid)}</GUID>
+                        <ALTERID>1</ALTERID>
+                        <NAME>{self._escape_xml(ledger_name)}</NAME>
+                        {update_xml}
+                    </LEDGER>
+                </TALLYMESSAGE>
+            </DATA>
+        </BODY>
+    </ENVELOPE>
+            """.strip()
+            
+            print(f"\n   📤 Sending update to Tally...")
+            print(f"   📄 Update XML:")
+            print("   " + "="*60)
+            for line in alter_xml.split('\n'):
+                print(f"   {line}")
+            print("   " + "="*60)
+            
+            response = requests.post(
+                self.tally_url,
+                data=alter_xml.encode("utf-8"),
+                headers={"Content-Type": "application/xml"},
+                timeout=30
+            )
+            
+            print(f"\n   📨 Tally Response:")
+            print(f"      Status Code: {response.status_code}")
+            print(f"   📄 Response:")
+            print("   " + "="*60)
+            for line in response.text.split('\n'):
+                print(f"   {line}")
+            print("   " + "="*60)
+            
             response_text = response.text.lower()
             
-            if "error" in response_text or "failed" in response_text:
+            # Check response
+            if "error" in response_text or "<status>0</status>" not in response_text:
                 return False, "Tally rejected the update", response.text[:500]
             
-            if response.status_code == 200:
-                print(f"   ✅ Successfully updated in Tally")
+            if response.status_code == 200 and "<status>1</status>" in response_text:
+                print(f"   ✅ Update successful!")
                 return True, None, response.text[:300]
             
-            return False, f"HTTP {response.status_code}", response.text[:500]
+            return False, f"Unexpected response: HTTP {response.status_code}", response.text[:500]
             
         except Exception as e:
+            print(f"   ❌ Exception: {e}")
+            import traceback
+            traceback.print_exc()
             return False, str(e), None
     
     def _complete_item(self, queue_id, success, error, tally_response):
         """Report completion status back to backend"""
         try:
+            print(f"\n   📡 Sending completion to backend...")
+            print(f"      Queue ID: {queue_id}")
+            print(f"      Success: {success}")
+            print(f"      Error: {error}")
+            
             response = requests.post(
                 f"{self.backend_url}/api/tally-sync/complete-from-middleware/{queue_id}",
                 headers={
                     'Content-Type': 'application/json',
-                    'x-middleware-token': MIDDLEWARE_TOKEN  # ✅ Use correct header
+                    'x-middleware-token': MIDDLEWARE_TOKEN
                 },
                 json={
                     'success': success,
@@ -213,6 +299,9 @@ class BidirectionalSync:
                 },
                 timeout=10
             )
+            
+            print(f"      Backend Status: {response.status_code}")
+            print(f"      Backend Response: {response.text[:200]}")
             
             if response.status_code == 200:
                 status = "✅ Completed" if success else "❌ Failed"
@@ -223,6 +312,8 @@ class BidirectionalSync:
                 
         except Exception as e:
             print(f"   ⚠️ Failed to report to backend: {e}")
+            import traceback
+            traceback.print_exc()
     
     @staticmethod
     def _escape_xml(text):
