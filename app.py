@@ -11,6 +11,7 @@ import json
 import os
 import hashlib
 from datetime import datetime
+from bidirectional_sync import BidirectionalSync
 
 OUTPUT_FILE = "tally_export.csv"
 CACHE_FILE = "tally_cache.json"  # Stores previous sync data
@@ -60,6 +61,9 @@ class MiddlewareApp:
         
         self.selected_company_id = None
         self.selected_company_name = None
+
+        self.bidirectional_sync = None
+        self.bidirectional_enabled = BooleanVar(value=False)
 
         # Status variables
         self.tally_status = StringVar(value="Checking...")
@@ -115,6 +119,7 @@ class MiddlewareApp:
         self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def build_ui(self, parent):
+
         # Header
         Label(parent, text="Tally Middleware - Smart Auto-Sync", 
               font=("Arial", 14, "bold")).pack(pady=10)
@@ -359,6 +364,71 @@ class MiddlewareApp:
         self.extract_btn.pack(pady=20)
         
         Label(parent, text="", height=2).pack()
+
+
+        bidirectional_frame = Frame(parent, relief="solid", borderwidth=2, bg="#ffe6f0")
+        bidirectional_frame.pack(pady=10, padx=30, fill=X)
+        
+        Label(
+            bidirectional_frame,
+            text="🔄 Bidirectional Sync (Backend → Tally)",
+            font=("Arial", 11, "bold"),
+            bg="#ffe6f0"
+        ).pack(pady=8)
+        
+        Checkbutton(
+            bidirectional_frame,
+            text="Enable Bidirectional Sync (Poll backend for address updates)",
+            variable=self.bidirectional_enabled,
+            font=("Arial", 10),
+            bg="#ffe6f0",
+            command=self.toggle_bidirectional_sync
+        ).pack(anchor='w', padx=20, pady=5)
+        
+        Label(
+            bidirectional_frame,
+            text="When enabled, middleware will check backend every 30s for address updates",
+            font=("Arial", 8),
+            fg="#666",
+            bg="#ffe6f0"
+        ).pack(pady=2)
+    
+    def toggle_bidirectional_sync(self):
+        """Toggle bidirectional sync on/off"""
+        if self.bidirectional_enabled.get():
+            if not self.selected_company_id:
+                from tkinter import simpledialog
+                company_id = simpledialog.askstring(
+                    "Company ID Required",
+                    "Enter Company ID:",
+                    parent=self.root
+                )
+                if not company_id:
+                    self.bidirectional_enabled.set(False)
+                    return
+                self.selected_company_id = company_id.strip()
+            
+            # Start bidirectional sync
+            self.bidirectional_sync = BidirectionalSync(
+                company_id=self.selected_company_id,
+                tally_company_name=self.company_var.get(),
+                username=self.user_entry.get().strip(),
+                password=self.pass_entry.get().strip()
+            )
+            self.bidirectional_sync.start_polling(interval=30)
+            
+            print("✅ Bidirectional sync enabled")
+            self.extraction_status.set("🔄 Bidirectional sync enabled (polling every 30s)")
+        
+        else:
+            # Stop bidirectional sync
+            if self.bidirectional_sync:
+                self.bidirectional_sync.stop_polling()
+                self.bidirectional_sync = None
+            
+            print("⏹️ Bidirectional sync disabled")
+            self.extraction_status.set("⏹️ Bidirectional sync disabled")
+
 
     def refresh_status(self):
         if self.tally.test_connection():
@@ -956,14 +1026,27 @@ class MiddlewareApp:
         self.root.after(0, lambda: self.extraction_status.set(message))
 
 
+
+
 if __name__ == "__main__":
     root = Tk()
     app = MiddlewareApp(root)
     
-    # Handle window close event to stop auto-sync
+    # Handle window close event to stop all background threads
     def on_closing():
+        print("\n🛑 Shutting down...")
+        
+        # Stop auto-sync if running
         if app.auto_sync_enabled.get():
+            print("   Stopping auto-sync...")
             app.stop_auto_sync_thread()
+        
+        # Stop bidirectional sync if running
+        if app.bidirectional_enabled.get() and app.bidirectional_sync:
+            print("   Stopping bidirectional sync...")
+            app.bidirectional_sync.stop_polling()
+        
+        print("   ✅ All threads stopped")
         root.destroy()
     
     root.protocol("WM_DELETE_WINDOW", on_closing)
