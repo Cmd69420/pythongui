@@ -1,6 +1,12 @@
 import requests
 import json
 from config import MIDDLEWARE_TOKEN
+from flask import Flask, request, jsonify
+
+
+app = Flask(__name__)
+TALLY_URL = "http://localhost:9000"
+
 
 class BackendUploader:
     def __init__(self, backend_url, middleware_token):
@@ -163,3 +169,140 @@ def prepare_client_for_upload(client_dict):
         'notes': client_dict.get('notes'),
         'source': 'tally'
     }
+
+@app.route('/api/tally/push-update', methods=['POST'])
+def push_update_to_tally():
+    """
+    Push address / phone / email updates from backend to Tally
+    """
+    try:
+        data = request.get_json(force=True)
+
+        tally_guid = data.get('tallyGuid')
+        tally_company_name = data.get('tallyCompanyName')
+        username = data.get('username', '')
+        password = data.get('password', '')
+        operation = data.get('operation')
+        update_data = data.get('data')
+
+        if not all([tally_guid, tally_company_name, operation, update_data]):
+            return jsonify({
+                "success": False,
+                "error": "Missing required fields"
+            }), 400
+
+        # Optional login block
+        login_block = ""
+        if username and password:
+            login_block = f"""
+                <LOGIN>
+                    <USERNAME>{username}</USERNAME>
+                    <PASSWORD>{password}</PASSWORD>
+                </LOGIN>
+            """
+
+        # Build update XML
+        update_xml = ""
+
+        if operation == "update_address" and "address" in update_data:
+            address_lines = update_data["address"].split(",")
+            update_xml += "<ADDRESS.LIST>\n"
+            for line in address_lines:
+                if line.strip():
+                    update_xml += f"    <ADDRESS>{line.strip()}</ADDRESS>\n"
+            update_xml += "</ADDRESS.LIST>"
+
+        elif operation == "update_phone" and "phone" in update_data:
+            update_xml = f"<LEDGERPHONE>{update_data['phone']}</LEDGERPHONE>"
+
+        elif operation == "update_email" and "email" in update_data:
+            update_xml = f"<EMAIL>{update_data['email']}</EMAIL>"
+
+        elif operation == "update_multiple":
+            if "address" in update_data:
+                address_lines = update_data["address"].split(",")
+                update_xml += "<ADDRESS.LIST>\n"
+                for line in address_lines:
+                    if line.strip():
+                        update_xml += f"    <ADDRESS>{line.strip()}</ADDRESS>\n"
+                update_xml += "</ADDRESS.LIST>\n"
+
+            if "phone" in update_data:
+                update_xml += f"<LEDGERPHONE>{update_data['phone']}</LEDGERPHONE>\n"
+
+            if "email" in update_data:
+                update_xml += f"<EMAIL>{update_data['email']}</EMAIL>\n"
+
+        else:
+            return jsonify({
+                "success": False,
+                "error": f"Unsupported operation: {operation}"
+            }), 400
+
+        # Build final Tally XML
+        xml_payload = f"""
+<ENVELOPE>
+    <HEADER>
+        <VERSION>1</VERSION>
+        <TALLYREQUEST>Import Data</TALLYREQUEST>
+        <TYPE>Data</TYPE>
+        <ID>Ledger Update</ID>
+    </HEADER>
+    <BODY>
+        <DESC>
+            <STATICVARIABLES>
+                <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
+                <SVCURRENTCOMPANY>{tally_company_name}</SVCURRENTCOMPANY>
+                {login_block}
+            </STATICVARIABLES>
+        </DESC>
+        <DATA>
+            <TALLYMESSAGE>
+                <LEDGER ACTION="Alter">
+                    <GUID>{tally_guid}</GUID>
+                    {update_xml}
+                </LEDGER>
+            </TALLYMESSAGE>
+        </DATA>
+    </BODY>
+</ENVELOPE>
+        """.strip()
+
+        response = requests.post(
+            TALLY_URL,
+            data=xml_payload.encode("utf-8"),
+            headers={"Content-Type": "application/xml"},
+            timeout=30
+        )
+
+        response_text = response.text.lower()
+
+        if "error" in response_text or "failed" in response_text:
+            return jsonify({
+                "success": False,
+                "error": "Tally rejected the update",
+                "tallyResponse": response.text[:500]
+            }), 400
+
+        if response.status_code == 200:
+            return jsonify({
+                "success": True,
+                "message": "Successfully updated in Tally",
+                "tallyResponse": response.text[:300]
+            })
+
+        return jsonify({
+            "success": False,
+            "error": f"HTTP {response.status_code}",
+            "tallyResponse": response.text[:500]
+        }), 500
+
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+if __name__ == "__main__":
+    app.run(port=5001, debug=True)
